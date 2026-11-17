@@ -1,7 +1,7 @@
 // The whole game state and its rules: movement, shooting, dashing, waves, the boss, boons,
 // pickups, combos and collisions. Pure logic — no DOM, no canvas, no audio — so the same
 // step function drives real play, the title backdrop and the deterministic screenshot scenes.
-import { BOONS, COMBO_MAX, COMBO_WINDOW, ENEMIES, FIELD, FINAL_WAVE, ORB, PLAYER, STEP, wavePlan } from './config.js';
+import { AMBIENT, BOONS, COMBO_MAX, COMBO_WINDOW, ENEMIES, FIELD, FINAL_WAVE, ORB, PLAYER, STEP, wavePlan } from './config.js';
 
 export const EVENT_NONE = 0;
 export const EVENT_SHOOT = 1;
@@ -34,6 +34,7 @@ export function createWorld(random) {
       score: 0,
       combo: 0,
       comboTimer: 0,
+      bestCombo: 0,
       kills: 0,
       orbsCollected: 0,
       orbsEarned: 0,
@@ -52,7 +53,11 @@ export function createWorld(random) {
       particles: [],
       floats: [],
       stars: [],
+      nebula: [],
+      debris: [],
+      motes: [],
       spawnQueue: [],
+      waveTotal: 0,
       spawnTimer: 0,
       orbTimer: 2,
       boons: [],
@@ -66,9 +71,41 @@ export function createWorld(random) {
   function makeStars() {
     state.stars = [];
     for (let i = 0; i < 130; i += 1) {
+      const layer = random.int(0, 2); // 0 far, 1 mid, 2 near: nearer stars are bigger and drift faster
       state.stars.push({
         x: random.range(0, FIELD.width), y: random.range(0, FIELD.height),
-        r: random.range(0.6, 2.2), tw: random.range(0, TAU), speed: random.range(4, 18),
+        r: random.range(0.6, 2.2) * (0.7 + layer * 0.4), tw: random.range(0, TAU), speed: random.range(4, 18),
+        layer,
+      });
+    }
+  }
+
+  /** Soft nebula clouds, drifting shards and glowing motes that fill the tide. */
+  function makeAmbient() {
+    const colours = ['#2ee6a8', '#4f8cff', '#b388ff', '#ff7ab8', '#37c8e8'];
+    state.nebula = [];
+    for (let i = 0; i < AMBIENT.nebulae; i += 1) {
+      state.nebula.push({
+        x: random.range(0, FIELD.width), y: random.range(0, FIELD.height),
+        r: random.range(140, 320), colour: colours[i % colours.length],
+        vx: random.range(-7, 7), vy: random.range(-4, 4), phase: random.range(0, TAU),
+      });
+    }
+    state.debris = [];
+    for (let i = 0; i < AMBIENT.debris; i += 1) {
+      state.debris.push({
+        x: random.range(0, FIELD.width), y: random.range(0, FIELD.height),
+        r: random.range(5, 16), rot: random.range(0, TAU), vr: random.range(-0.4, 0.4),
+        vx: random.range(-12, 12), vy: random.range(-6, 10),
+        shade: random.range(0.10, 0.22),
+      });
+    }
+    state.motes = [];
+    for (let i = 0; i < AMBIENT.motes; i += 1) {
+      state.motes.push({
+        x: random.range(0, FIELD.width), y: random.range(0, FIELD.height),
+        r: random.range(1.2, 2.6), tw: random.range(0, TAU),
+        vx: random.range(-9, 9), vy: random.range(-5, 8),
       });
     }
   }
@@ -81,8 +118,8 @@ export function createWorld(random) {
     }
   }
 
-  function floatText(x, y, text, colour) {
-    state.floats.push({ x, y, text, colour, life: 0.9 });
+  function floatText(x, y, text, colour, size = 17) {
+    state.floats.push({ x, y, text, colour, life: 0.9, size });
   }
 
   function edgeSpawn(kind) {
@@ -107,6 +144,7 @@ export function createWorld(random) {
       speed: def.speed * random.range(0.9, 1.15), score: def.score, touch: def.touch,
       colour: def.colour, shotTimer: random.range(1, def.shotInterval ?? 99),
       burstTimer: 3, summonTimer: 6, wobble: random.range(0, TAU), flash: 0,
+      chargeTimer: random.range(1.2, 2.2), telegraph: 0, charging: 0, chargeX: 0, chargeY: 0,
     };
     state.enemies.push(enemy);
     if (kind === 'boss') state.boss = enemy;
@@ -120,12 +158,16 @@ export function createWorld(random) {
     for (let i = 0; i < plan.wisps; i += 1) state.spawnQueue.push('wisp');
     for (let i = 0; i < plan.spitters; i += 1) state.spawnQueue.push('spitter');
     for (let i = 0; i < plan.brutes; i += 1) state.spawnQueue.push('brute');
+    for (let i = 0; i < plan.darts; i += 1) state.spawnQueue.push('dart');
+    for (let i = 0; i < plan.splitters; i += 1) state.spawnQueue.push('splitter');
+    for (let i = 0; i < plan.snipers; i += 1) state.spawnQueue.push('sniper');
     // Shuffle the queue so the wave never arrives in one clump.
     for (let i = state.spawnQueue.length - 1; i > 0; i -= 1) {
       const j = random.int(0, i);
       [state.spawnQueue[i], state.spawnQueue[j]] = [state.spawnQueue[j], state.spawnQueue[i]];
     }
     if (plan.boss) state.spawnQueue.push('boss');
+    state.waveTotal = state.spawnQueue.length;
     state.spawnTimer = 0.6;
     state.banner = wave === FINAL_WAVE ? 'THE GLOOMWHALE' : `WAVE ${wave}`;
     state.bannerTimer = 2.2;
@@ -148,18 +190,35 @@ export function createWorld(random) {
     }
   }
 
+  /** A splitter freed from its shell divides into two quick motes, right where it died. */
+  function spawnMote(x, y) {
+    const def = ENEMIES.mote;
+    state.enemies.push({
+      kind: 'mote', x, y, hp: def.hp, maxHp: def.hp, radius: def.radius,
+      speed: def.speed * random.range(0.9, 1.15), score: def.score, touch: def.touch,
+      colour: def.colour, shotTimer: 99, burstTimer: 99, summonTimer: 99,
+      wobble: random.range(0, TAU), flash: 0,
+      chargeTimer: 99, telegraph: 0, charging: 0, chargeX: 0, chargeY: 0, entered: true,
+    });
+  }
+
   function killEnemy(enemy, index) {
     const mult = Math.max(1, state.combo);
     const gained = enemy.score * mult;
     state.score += gained;
     state.kills += 1;
     state.combo = Math.min(COMBO_MAX, state.combo + 1);
+    state.bestCombo = Math.max(state.bestCombo, state.combo);
     state.comboTimer = COMBO_WINDOW;
     floatText(enemy.x, enemy.y - enemy.radius, `+${gained}`, '#ffd166');
-    burst(enemy.x, enemy.y, enemy.colour, enemy.kind === 'boss' ? 60 : 14, 220);
-    state.shake = Math.max(state.shake, enemy.kind === 'boss' ? 14 : 5);
-    dropOrbs(enemy.x, enemy.y, enemy.kind === 'brute' ? 3 : enemy.kind === 'boss' ? 10 : 1);
+    burst(enemy.x, enemy.y, enemy.colour, enemy.kind === 'boss' ? 60 : enemy.kind === 'splitter' ? 26 : 14, 220);
+    state.shake = Math.max(state.shake, enemy.kind === 'boss' ? 14 : enemy.kind === 'splitter' ? 7 : 5);
+    dropOrbs(enemy.x, enemy.y, enemy.kind === 'brute' ? 3 : enemy.kind === 'boss' ? 10 : enemy.kind === 'splitter' ? 2 : 1);
     if (enemy.kind === 'boss') state.boss = null;
+    if (enemy.kind === 'splitter') {
+      spawnMote(enemy.x - 16, enemy.y);
+      spawnMote(enemy.x + 16, enemy.y);
+    }
     state.enemies.splice(index, 1);
     return EVENT_KILL;
   }
@@ -272,6 +331,7 @@ export function createWorld(random) {
           burst(b.x, b.y, '#ffe9a8', 3, 120);
           state.bolts.splice(i, 1);
           if (e.hp <= 0) events |= killEnemy(e, j);
+          else floatText(b.x, b.y - 12, `-${b.damage}`, '#ffffff', 13);
           break;
         }
       }
@@ -301,9 +361,55 @@ export function createWorld(random) {
       } else if (e.kind === 'brute') {
         e.x += (dx / d) * e.speed * dt;
         e.y += (dy / d) * e.speed * dt;
+      } else if (e.kind === 'dart') {
+        // Drift in, lock on with a flash, then charge straight at the lantern.
+        if (e.charging > 0) {
+          e.charging -= dt;
+          e.x += e.chargeX * 520 * dt;
+          e.y += e.chargeY * 520 * dt;
+        } else if (e.telegraph > 0) {
+          e.telegraph -= dt;
+          e.flash = 0.08;
+          if (e.telegraph <= 0) {
+            e.charging = 0.5;
+            e.chargeX = dx / d;
+            e.chargeY = dy / d;
+          }
+        } else {
+          e.chargeTimer -= dt;
+          e.x += (dx / d) * e.speed * dt + Math.cos(e.wobble * 2.4) * 20 * dt;
+          e.y += (dy / d) * e.speed * dt + Math.sin(e.wobble * 1.9) * 20 * dt;
+          if (e.chargeTimer <= 0 && d < 460) {
+            e.telegraph = 0.45;
+            e.chargeTimer = random.range(1.8, 2.6);
+          }
+        }
+      } else if (e.kind === 'splitter') {
+        e.x += (dx / d) * e.speed * dt + Math.cos(e.wobble * 1.6) * 18 * dt;
+        e.y += (dy / d) * e.speed * dt + Math.sin(e.wobble * 1.3) * 18 * dt;
+      } else if (e.kind === 'mote') {
+        e.x += (dx / d) * e.speed * dt + Math.cos(e.wobble * 3.1) * 34 * dt;
+        e.y += (dy / d) * e.speed * dt + Math.sin(e.wobble * 2.7) * 34 * dt;
+      } else if (e.kind === 'sniper') {
+        // Hold a firing distance: close in when far, back off when crowded.
+        const want = 380;
+        const dir = d > want + 40 ? 1 : d < want - 40 ? -1 : 0;
+        e.x += (dx / d) * e.speed * dir * dt + Math.cos(e.wobble * 1.1) * 22 * dt;
+        e.y += (dy / d) * e.speed * dir * dt + Math.sin(e.wobble * 0.9) * 22 * dt;
+        e.shotTimer -= dt;
+        if (e.shotTimer <= 0 && d < 560) {
+          e.shotTimer = ENEMIES.sniper.shotInterval * random.range(0.9, 1.2);
+          state.foeBolts.push({ x: e.x, y: e.y, vx: (dx / d) * ENEMIES.sniper.boltSpeed, vy: (dy / d) * ENEMIES.sniper.boltSpeed, life: 4, radius: 7 });
+        }
       } else if (e.kind === 'boss') {
-        e.x += (dx / d) * e.speed * dt + Math.cos(e.wobble * 0.9) * 60 * dt;
-        e.y += (dy / d) * e.speed * 0.6 * dt + Math.sin(e.wobble * 0.9) * 40 * dt;
+        // Entrance: the whale dives in fast until it is fully on screen, then hunts.
+        if (e.y < 120) {
+          e.y += 150 * dt;
+          e.x += (FIELD.width / 2 - e.x) * 0.5 * dt;
+        } else {
+          e.x += (dx / d) * e.speed * dt + Math.cos(e.wobble * 0.9) * 60 * dt;
+          e.y += (dy / d) * e.speed * 0.6 * dt + Math.sin(e.wobble * 0.9) * 40 * dt;
+        }
         e.burstTimer -= dt;
         if (e.burstTimer <= 0) {
           e.burstTimer = 3.2;
@@ -422,8 +528,36 @@ export function createWorld(random) {
     }
     for (const s of state.stars) {
       s.tw += dt * 1.4;
-      s.y += s.speed * dt * 0.12;
+      s.y += s.speed * dt * (0.06 + s.layer * 0.09);
       if (s.y > FIELD.height + 4) { s.y = -4; s.x = random.range(0, FIELD.width); }
+    }
+    for (const n of state.nebula) {
+      n.x += n.vx * dt;
+      n.y += n.vy * dt;
+      n.phase += dt * 0.2;
+      const m = n.r + 40;
+      if (n.x < -m) n.x = FIELD.width + m;
+      if (n.x > FIELD.width + m) n.x = -m;
+      if (n.y < -m) n.y = FIELD.height + m;
+      if (n.y > FIELD.height + m) n.y = -m;
+    }
+    for (const db of state.debris) {
+      db.x += db.vx * dt;
+      db.y += db.vy * dt;
+      db.rot += db.vr * dt;
+      if (db.x < -24) db.x = FIELD.width + 24;
+      if (db.x > FIELD.width + 24) db.x = -24;
+      if (db.y < -24) db.y = FIELD.height + 24;
+      if (db.y > FIELD.height + 24) db.y = -24;
+    }
+    for (const mo of state.motes) {
+      mo.tw += dt * 1.8;
+      mo.x += mo.vx * dt;
+      mo.y += mo.vy * dt;
+      if (mo.x < -8) mo.x = FIELD.width + 8;
+      if (mo.x > FIELD.width + 8) mo.x = -8;
+      if (mo.y < -8) mo.y = FIELD.height + 8;
+      if (mo.y > FIELD.height + 8) mo.y = -8;
     }
   }
 
@@ -434,6 +568,7 @@ export function createWorld(random) {
       Object.assign(state, freshState());
       state.stars = kept.length > 0 ? kept : state.stars;
       makeStars();
+      makeAmbient();
     },
     startRun() {
       this.reset();

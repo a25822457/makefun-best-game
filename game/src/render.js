@@ -1,7 +1,7 @@
 // Everything the player sees: the aurora tide, the lantern-keeper, the shadow foes, the HUD
 // and every screen (title, boon choice, pause, game over, victory). Pure canvas 2D, drawn
 // from the world state; the game logic never draws and the renderer never steps the world.
-import { FIELD, FINAL_WAVE, ORB, PALETTE, FONT, PLAYER } from './config.js';
+import { COMBO_WINDOW, FIELD, FINAL_WAVE, ORB, PALETTE, FONT, PLAYER, STARLIGHT_GOAL } from './config.js';
 
 export const SCREEN_TITLE = 'title';
 export const SCREEN_PLAY = 'play';
@@ -86,12 +86,43 @@ export function createRenderer(canvas) {
       ctx.fill();
     }
     ctx.restore();
-    // Stars, twinkling.
+    // Nebula clouds: slow, breathing colour behind everything.
+    for (const n of state.nebula) {
+      const breathe = 0.10 + 0.05 * Math.sin(n.phase);
+      glow(n.x, n.y, n.r, n.colour, breathe);
+    }
+    // Drifting shards of the old tide.
+    for (const db of state.debris) {
+      ctx.save();
+      ctx.translate(db.x, db.y);
+      ctx.rotate(db.rot);
+      ctx.fillStyle = `rgba(148, 178, 235, ${db.shade})`;
+      ctx.beginPath();
+      ctx.moveTo(-db.r, -db.r * 0.4);
+      ctx.lineTo(-db.r * 0.2, -db.r);
+      ctx.lineTo(db.r, -db.r * 0.3);
+      ctx.lineTo(db.r * 0.5, db.r * 0.8);
+      ctx.lineTo(-db.r * 0.7, db.r * 0.6);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    }
+    // Stars, twinkling — nearer layers shine bigger and brighter.
     for (const s of state.stars) {
-      ctx.globalAlpha = 0.35 + 0.4 * Math.abs(Math.sin(s.tw));
+      const base = 0.25 + s.layer * 0.12;
+      ctx.globalAlpha = base + 0.4 * Math.abs(Math.sin(s.tw));
       ctx.fillStyle = '#dfe8ff';
       ctx.beginPath();
       ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+    // Wandering lantern motes: tiny lights adrift in the tide.
+    for (const mo of state.motes) {
+      ctx.globalAlpha = 0.3 + 0.35 * Math.abs(Math.sin(mo.tw));
+      ctx.fillStyle = '#ffe9a8';
+      ctx.beginPath();
+      ctx.arc(mo.x, mo.y, mo.r, 0, Math.PI * 2);
       ctx.fill();
     }
     ctx.globalAlpha = 1;
@@ -173,6 +204,86 @@ export function createRenderer(canvas) {
       ctx.fillStyle = '#2a0a0a';
       ctx.fillRect(e.x - 12, e.y - 5, 9, 5);
       ctx.fillRect(e.x + 3, e.y - 5, 9, 5);
+    } else if (e.kind === 'dart') {
+      // A swift arrowhead: a bright dart with a fading wake.
+      const ang = Math.atan2(e.chargeY || 0, e.chargeX || 1);
+      ctx.save();
+      ctx.translate(e.x, e.y);
+      ctx.rotate(e.charging > 0 ? ang : e.wobble * 0.5);
+      ctx.globalAlpha = 0.4;
+      ctx.fillStyle = e.colour;
+      ctx.beginPath();
+      ctx.moveTo(-e.radius * 1.8, -5);
+      ctx.lineTo(-e.radius * 0.6, 0);
+      ctx.lineTo(-e.radius * 1.8, 5);
+      ctx.closePath();
+      ctx.fill();
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = flash ? '#ffffff' : e.colour;
+      ctx.beginPath();
+      ctx.moveTo(e.radius + 6, 0);
+      ctx.lineTo(-e.radius, -e.radius * 0.85);
+      ctx.lineTo(-e.radius * 0.4, 0);
+      ctx.lineTo(-e.radius, e.radius * 0.85);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = '#08222e';
+      ctx.beginPath();
+      ctx.arc(2, 0, 3, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    } else if (e.kind === 'splitter') {
+      // A fat green pod with two cores, pulsing as if about to burst.
+      const pulse = 1 + Math.sin(e.wobble * 3) * 0.08;
+      ctx.beginPath();
+      ctx.arc(e.x, e.y, e.radius * pulse, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(255,255,255,0.45)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(e.x, e.y, e.radius * pulse - 6, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.fillStyle = '#1d2f08';
+      ctx.beginPath();
+      ctx.arc(e.x - 8, e.y - 2, 5, 0, Math.PI * 2);
+      ctx.arc(e.x + 8, e.y - 2, 5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#eaffb0';
+      ctx.beginPath();
+      ctx.arc(e.x - 8, e.y - 3, 2, 0, Math.PI * 2);
+      ctx.arc(e.x + 8, e.y - 3, 2, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (e.kind === 'mote') {
+      ctx.beginPath();
+      ctx.arc(e.x, e.y, e.radius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#1d2f08';
+      ctx.beginPath();
+      ctx.arc(e.x - 3, e.y - 1, 1.8, 0, Math.PI * 2);
+      ctx.arc(e.x + 3, e.y - 1, 1.8, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (e.kind === 'sniper') {
+      // A diamond with a long barrel, slowly turning as it tracks the lantern.
+      ctx.save();
+      ctx.translate(e.x, e.y);
+      ctx.rotate(Math.sin(e.wobble * 0.8) * 0.35);
+      ctx.beginPath();
+      ctx.moveTo(0, -e.radius - 4);
+      ctx.lineTo(e.radius, 0);
+      ctx.lineTo(0, e.radius + 4);
+      ctx.lineTo(-e.radius, 0);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = '#3a2405';
+      ctx.fillRect(-2, -e.radius - 14, 4, 14);
+      ctx.beginPath();
+      ctx.arc(0, 0, 5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#ffe1a8';
+      ctx.beginPath();
+      ctx.arc(0, 0, 2, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
     } else {
       // The Gloomwhale: a great shadowed bulk with a glowing maw and crown spines.
       ctx.beginPath();
@@ -197,12 +308,7 @@ export function createRenderer(canvas) {
       ctx.arc(e.x - 26, e.y - 8, 3, 0, Math.PI * 2);
       ctx.arc(e.x + 26, e.y - 8, 3, 0, Math.PI * 2);
       ctx.fill();
-      // Health bar above the whale.
-      const w = 190;
-      ctx.fillStyle = 'rgba(0,0,0,0.55)';
-      ctx.fillRect(e.x - w / 2, e.y - e.radius - 44, w, 10);
-      ctx.fillStyle = '#b388ff';
-      ctx.fillRect(e.x - w / 2, e.y - e.radius - 44, w * Math.max(0, e.hp / e.maxHp), 10);
+      // (Its health lives on the big bar at the bottom of the HUD, not here.)
     }
     if (e.kind !== 'boss' && e.hp < e.maxHp) {
       const w = e.radius * 2;
@@ -264,15 +370,33 @@ export function createRenderer(canvas) {
       ctx.fillStyle = '#ffd166';
       ctx.font = `700 20px ${FONT}`;
       ctx.fillText(`COMBO x${state.combo}`, 24, 96);
+      // Combo timer: the bar shrinks as the combo is about to fade.
+      ctx.fillStyle = 'rgba(255,255,255,0.18)';
+      ctx.fillRect(24, 104, 110, 6);
+      ctx.fillStyle = '#ffd166';
+      ctx.fillRect(24, 104, 110 * Math.max(0, state.comboTimer / COMBO_WINDOW), 6);
     }
-    // Wave, top centre.
+    if (state.bestCombo >= 3) {
+      ctx.fillStyle = PALETTE.muted;
+      ctx.font = `500 14px ${FONT}`;
+      ctx.fillText(`BEST COMBO x${state.bestCombo}`, 24, 130);
+    }
+    // Wave, top centre, with a progress bar for the wave's remaining foes.
     ctx.textAlign = 'center';
     ctx.fillStyle = PALETTE.text;
     ctx.font = `700 22px ${FONT}`;
     ctx.fillText(state.wave === 0 ? 'THE TIDE WAITS' : `WAVE ${state.wave} / ${FINAL_WAVE}`, FIELD.width / 2, 40);
+    if (state.wave > 0 && state.waveTotal > 0) {
+      const remaining = Math.max(0, state.spawnQueue.length + state.enemies.length);
+      const done = Math.min(1, 1 - remaining / state.waveTotal);
+      ctx.fillStyle = 'rgba(255,255,255,0.16)';
+      ctx.fillRect(FIELD.width / 2 - 130, 48, 260, 8);
+      ctx.fillStyle = '#2ee6a8';
+      ctx.fillRect(FIELD.width / 2 - 130, 48, 260 * done, 8);
+    }
     ctx.font = `500 15px ${FONT}`;
     ctx.fillStyle = PALETTE.muted;
-    ctx.fillText(`STARLIGHT ${state.orbsCollected}  ·  FOES SUNK ${state.kills}`, FIELD.width / 2, 64);
+    ctx.fillText(`STARLIGHT ${state.orbsCollected} / ${STARLIGHT_GOAL}  ·  FOES SUNK ${state.kills}`, FIELD.width / 2, 76);
     // Hull hearts and dash, top right.
     ctx.textAlign = 'right';
     let hx = FIELD.width - 24;
@@ -289,17 +413,40 @@ export function createRenderer(canvas) {
     ctx.fillStyle = PALETTE.muted;
     ctx.font = `500 13px ${FONT}`;
     ctx.fillText(dashFrac >= 1 ? 'DASH READY  [SHIFT / RIGHT-CLICK]' : 'DASH RECHARGING', FIELD.width - 24, 84);
+    // Lantern fuel: the lantern's flame is the hull — a gauge, and a warning when it runs low.
+    const fuelFrac = p.hull / Math.max(1, p.maxHull);
+    ctx.fillStyle = 'rgba(255,255,255,0.18)';
+    ctx.fillRect(FIELD.width - 184, 96, 160, 8);
+    ctx.fillStyle = fuelFrac <= 0.34 ? '#ff5d5d' : '#ffd166';
+    ctx.fillRect(FIELD.width - 184, 96, 160 * fuelFrac, 8);
+    ctx.fillStyle = PALETTE.muted;
+    ctx.font = `500 13px ${FONT}`;
+    ctx.fillText('LANTERN FUEL', FIELD.width - 24, 124);
+    if (p.hull <= 1 && state.phase === 'play') {
+      const blink = 0.6 + 0.4 * Math.sin(state.time * 6);
+      ctx.globalAlpha = blink;
+      ctx.fillStyle = '#ff5d5d';
+      ctx.font = `700 18px ${FONT}`;
+      ctx.textAlign = 'right';
+      ctx.fillText('⚠ LOW FUEL — GATHER STARLIGHT', FIELD.width - 24, 150);
+      ctx.globalAlpha = 1;
+    }
     // Boss bar, bottom centre.
     if (state.boss) {
-      const w = 420;
+      const w = 460;
       ctx.textAlign = 'center';
       ctx.fillStyle = '#e8dcff';
       ctx.font = `700 16px ${FONT}`;
-      ctx.fillText('THE GLOOMWHALE', FIELD.width / 2, FIELD.height - 52);
+      ctx.fillText(`☠ THE GLOOMWHALE   ${Math.ceil(state.boss.hp)} / ${state.boss.maxHp} ☠`, FIELD.width / 2, FIELD.height - 52);
+      ctx.strokeStyle = 'rgba(179, 136, 255, 0.7)';
+      ctx.lineWidth = 1.5;
+      ctx.strokeRect(FIELD.width / 2 - w / 2 - 2, FIELD.height - 46, w + 4, 16);
       ctx.fillStyle = 'rgba(0,0,0,0.55)';
       ctx.fillRect(FIELD.width / 2 - w / 2, FIELD.height - 44, w, 12);
       ctx.fillStyle = '#b388ff';
       ctx.fillRect(FIELD.width / 2 - w / 2, FIELD.height - 44, w * Math.max(0, state.boss.hp / state.boss.maxHp), 12);
+      ctx.fillStyle = '#e8dcff';
+      ctx.fillRect(FIELD.width / 2 - w / 2, FIELD.height - 44, w * Math.max(0, state.boss.hp / state.boss.maxHp), 4);
     }
     // Wave banner.
     if (state.bannerTimer > 0 && state.banner) {
@@ -377,13 +524,23 @@ export function createRenderer(canvas) {
       ctx.fillStyle = '#ffd166';
       ctx.font = `700 15px ${FONT}`;
       ctx.fillText(`BLESSING ${i + 1}  ·  PRESS ${i + 1}`, r.x + r.w / 2, r.y + 34);
+      // Icon badge: a glowing ring with the blessing's mark.
+      glow(r.x + r.w / 2, r.y + 66, 30, 'rgba(255, 209, 102, 0.4)', 0.9);
+      ctx.strokeStyle = 'rgba(255, 209, 102, 0.8)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(r.x + r.w / 2, r.y + 66, 22, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.fillStyle = '#ffe9a8';
+      ctx.font = `700 26px ${FONT}`;
+      ctx.fillText(boon.icon ?? '✦', r.x + r.w / 2, r.y + 75);
       ctx.fillStyle = PALETTE.text;
       ctx.font = `700 24px ${FONT}`;
       const words = boon.name.split(' ');
-      ctx.fillText(words.join(' '), r.x + r.w / 2, r.y + 84);
+      ctx.fillText(words.join(' '), r.x + r.w / 2, r.y + 118);
       ctx.fillStyle = PALETTE.muted;
       ctx.font = `500 17px ${FONT}`;
-      wrapText(boon.text, r.x + r.w / 2, r.y + 122, r.w - 44, 24);
+      wrapText(boon.text, r.x + r.w / 2, r.y + 152, r.w - 44, 24);
     });
     titleText(`SCORE ${state.score}   ·   NEXT: WAVE ${Math.min(state.wave + 1, FINAL_WAVE)}`, 578, 20, PALETTE.muted, 600);
   }
@@ -406,6 +563,7 @@ export function createRenderer(canvas) {
       ['WAVE REACHED', `${Math.min(state.wave, FINAL_WAVE)} / ${FINAL_WAVE}`],
       ['FOES SUNK', String(state.kills)],
       ['STARLIGHT GATHERED', String(state.orbsCollected)],
+      ['BEST COMBO', `x${Math.max(state.bestCombo, state.combo)}`],
     ];
     ctx.textAlign = 'left';
     rows.forEach(([k, v], i) => {
@@ -494,7 +652,7 @@ export function createRenderer(canvas) {
       for (const f of state.floats) {
         ctx.globalAlpha = Math.max(0, f.life / 0.9);
         ctx.fillStyle = f.colour;
-        ctx.font = `700 17px ${FONT}`;
+        ctx.font = `700 ${f.size ?? 17}px ${FONT}`;
         ctx.textAlign = 'center';
         ctx.fillText(f.text, f.x, f.y);
       }

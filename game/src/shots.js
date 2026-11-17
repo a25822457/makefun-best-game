@@ -4,7 +4,7 @@
 // trouble, so the frame is what a real game looks like and the same seed always gives the
 // same frame. The victory scene plays all ten waves the same way; the end scene steers
 // recklessly, so it is caught out as a hurried player is.
-import { FIELD, PLAYER, STEP } from './config.js';
+import { BOONS, FIELD, FINAL_WAVE, PLAYER, STEP } from './config.js';
 import { EVENT_OVER, EVENT_WIN } from './world.js';
 import { SCREEN_BOON, SCREEN_OVER, SCREEN_PLAY, SCREEN_TITLE, SCREEN_WIN } from './render.js';
 
@@ -128,11 +128,59 @@ export function stageShot(name, world) {
       world.reset();
       world.startRun();
       simulate(world, PLAY_SECONDS);
-      if (world.state.phase === 'play') return { screen: SCREEN_PLAY, best: world.state.score };
+      if (world.state.phase === 'play') {
+        // Wait for a busy moment: a fresh wave mid-spawn reads far denser than a cleared one.
+        let extra = 0;
+        while (world.state.enemies.length < 6 && extra < 20 && world.state.phase === 'play') {
+          simulate(world, 2);
+          extra += 2;
+        }
+        return { screen: SCREEN_PLAY, best: world.state.score };
+      }
     }
     world.reset();
     world.startRun();
     simulate(world, 12);
+    return { screen: SCREEN_PLAY, best: world.state.score };
+  }
+  if (name === 'boss') {
+    // Stage wave 10 directly: the pilot fights the Gloomwhale with a fresh lantern,
+    // so the frame shows the boss fight itself, not the nine waves before it.
+    // A real wave-10 keeper arrives with blessings, so the staged keeper gets the
+    // three a run usually holds by then (twin bolts, ember bolts, thick glass).
+    world.reset();
+    world.startRun();
+    for (const id of ['twin', 'ember', 'glass']) {
+      BOONS.find((b) => b.id === id)?.apply(world.state.player);
+    }
+    world.state.player.hull = world.state.player.maxHull;
+    for (let w = 1; w < FINAL_WAVE; w += 1) world.nextWave();
+    let fought = false;
+    const steps = Math.floor(60 / SAMPLE);
+    for (let i = 0; i < steps; i += 1) {
+      const state = world.state;
+      if (state.phase !== 'play') break;
+      world.step(SAMPLE, autopilotInput(state));
+      if (state.boss) {
+        fought = true;
+        // Hold the fight until the whale has fully swum into frame (it enters
+        // from the top) and a few seconds of combat have passed.
+        let held = 0;
+        for (let j = 0; j < Math.floor(15 / SAMPLE); j += 1) {
+          if (world.state.phase !== 'play' || !world.state.boss) break;
+          world.step(SAMPLE, autopilotInput(world.state));
+          held += SAMPLE;
+          const b = world.state.boss; // the pilot can sink it mid-hold
+          if (held >= 4 && b && b.y > 150) break;
+        }
+        break;
+      }
+    }
+    if (fought && world.state.phase === 'play' && world.state.boss) return { screen: SCREEN_PLAY, best: world.state.score };
+    // The whale never arrived: show the deepest play the pilot managed.
+    world.reset();
+    world.startRun();
+    simulate(world, PLAY_SECONDS);
     return { screen: SCREEN_PLAY, best: world.state.score };
   }
   if (name === 'boon') {
